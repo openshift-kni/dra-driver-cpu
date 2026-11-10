@@ -1,0 +1,17 @@
+# See the OWNERS docs at https://go.k8s.io/owners
+
+aliases:
+  kni-dra-driver-cpu-reviewers:
+    - ffromani
+    - Tal-or
+    - swatisehgal
+    - shajmakh
+  kni-dra-driver-cpu-approvers:
+    - ffromani
+    - Tal-or
+    - swatisehgal
+    - shajmakh
+  konflux-approvers:
+    - yanirq
+    - shajmakh
+    - by2waysprojects
