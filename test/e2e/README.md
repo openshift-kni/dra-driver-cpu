@@ -19,6 +19,38 @@ While considering extending the testsuite, adding tests, cases or sub-suites, pl
      Flakes should be avoided and actively mitigated. The experience strongly suggests that is better to have a small
      set of representative, high value, highly reliably tests than a larger set of flakier tests.
 
+### adding or enhancing e2e tests
+
+When changing the e2e suite codebase, make sure to use a `Fixture` object the e2e utility packages provide.
+
+```golang
+import (
+    //...
+	"github.com/kubernetes-sigs/dra-driver-cpu/test/pkg/fixture"
+    //...
+)
+
+var _ = ginkgo.Describe("Your suite", ..., func() {
+	var (
+		rootFxt *fixture.Fixture
+	)
+
+	ginkgo.BeforeEach(func(ctx context.Context) {
+        //...
+		rootFxt, err = fixture.ForGinkgo()
+		gomega.Expect(err).ToNot(gomega.HaveOccurred(), "cannot create root fixture: %v", err)
+        //...
+    })
+
+//...
+```
+
+The fixture object will transparently provide:
+
+- a `logr.Logger` you can use for debug information; prefer `ginkgo.By` to document test steps
+- a `kubernetes.Interface` client enhanced to address the testsuite needs (e.g. object labelling)
+  you can use to manipulate kubernetes objects.
+
 ## configure using environment variables
 
 The following environment variable allow to change the behavior of the e2e tests.
@@ -46,7 +78,7 @@ honor these settings, where applicable.
   the cluster against which the tests run.
   If it is not set, the suit will pick a random node among the workers.
 
-- `DRACPU_E2E_RESERVED_CPUS`: (optional) if set, it is meant to mirror the driver `--reserved-cpus`
+- `DRACPU_E2E_RESERVED_CPUS`: (optional) if set, it is meant to mirror the driver `reservedCPUs`
   setting. The value must be a linux cpuset string. The tests will ensure no containers
   consume these CPUs.
   NOTE: the Makefile defaults to "0" if not set, because a nonempty value is needed internally.
@@ -55,7 +87,7 @@ honor these settings, where applicable.
 
 - `DRACPU_E2E_CPU_DEVICE_MODE`: (optional): If set, change the behavior of the tests to assume
   the driver is configured with the corresponding device mode. Is meant to mirror the driver
-  `--cpu-device-mode` setting.
+  `cpuDeviceMode` setting.
   NOTE: the Makefile defaults to "grouped" if not set, because a nonempty value is needed internally.
   NOTE: Likewise the e2e tests, the Makefile also behaves differently depending on this setting.
   It is recommended to set it before to run targets like `make ci-manifests`.
