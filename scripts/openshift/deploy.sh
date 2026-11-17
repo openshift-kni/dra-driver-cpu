@@ -33,6 +33,7 @@ One of the following is required:
 
 Optional environment variables:
   IMAGE_TAG               Driver image tag (default: latest).
+  IMAGE_DIGEST            Driver image digest (takes precedence over IMAGE_TAG).
   CPU_DEVICE_MODE         CPU device mode (default: grouped).
   CPU_GROUP_BY            CPU grouping (default: numanode).
   NAMESPACE               Namespace for the driver (default: openshift-dra-driver-cpu).
@@ -64,6 +65,7 @@ REPO_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 
 # ── Optional variables with defaults ────────────────────────────────────────
 IMAGE_TAG=${IMAGE_TAG:-latest}
+IMAGE_DIGEST=${IMAGE_DIGEST:-}
 NAMESPACE=${NAMESPACE:-openshift-dra-driver-cpu}
 RELEASE_NAME=${RELEASE_NAME:-dra-driver-cpu}
 TIMEOUT=${TIMEOUT:-2m}
@@ -140,7 +142,12 @@ oc label namespace "${NAMESPACE}" \
 	pod-security.kubernetes.io/warn=privileged \
 	--overwrite >/dev/null
 
-echo "Deploying ${RELEASE_NAME} to namespace ${NAMESPACE} (image: ${IMAGE_REPOSITORY}:${IMAGE_TAG})"
+IMAGE_REFERENCE="${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+if [ -n "${IMAGE_DIGEST}" ]; then
+	IMAGE_REFERENCE="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
+fi
+
+echo "Deploying ${RELEASE_NAME} to namespace ${NAMESPACE} (image: ${IMAGE_REFERENCE})"
 helm upgrade --install "${RELEASE_NAME}" "${CHART}" \
 	--namespace "${NAMESPACE}" \
 	--create-namespace \
@@ -148,6 +155,7 @@ helm upgrade --install "${RELEASE_NAME}" "${CHART}" \
 	--skip-schema-validation \
 	--set "image.repository=${IMAGE_REPOSITORY}" \
 	--set "image.tag=${IMAGE_TAG}" \
+	--set-string "image.digest=${IMAGE_DIGEST}" \
 	--set-literal "driverConfig.reservedCPUs=${RESERVED_CPUS}" \
 	--set "driverConfig.cpuDeviceMode=${CPU_DEVICE_MODE}" \
 	--set "driverConfig.groupBy=${CPU_GROUP_BY}" \
