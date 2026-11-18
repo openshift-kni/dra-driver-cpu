@@ -23,10 +23,15 @@ DRACPU_E2E_RESERVED_CPUS ?= "0"
 
 # deploy targets ------------------------------------------------------------
 .PHONY: deploy-openshift
-deploy-openshift:
+deploy-openshift: install-helm
 	KUBECONFIG="$(KUBECONFIG)" \
 	NODE_GROUP="$(NODE_GROUP)" \
+	PATH="$$PATH:$(CURDIR)/bin" \
 	./scripts/openshift/deploy.sh
+
+.PHONY: install-helm
+install-helm:
+	$(MAKE) -f Makefile install-helm GOFLAGS=
 
 .PHONY: uninstall-openshift
 uninstall-openshift:
@@ -52,11 +57,12 @@ ci-openshift-e2e-setup:
 
 .PHONY: test-e2e-openshift
 test-e2e-openshift:
+	@# OpenShift CI can leave an incomplete vendor/; use go.mod without modifying it.
 	KUBECONFIG="$(KUBECONFIG)" \
 	DRACPU_E2E_RESERVED_CPUS="$(DRACPU_E2E_RESERVED_CPUS)" \
 	DRACPU_E2E_DAEMONSET_NAMESPACE="$(OPENSHIFT_NAMESPACE)" \
 	DRACPU_E2E_FIXTURE_NAMESPACE="$(OPENSHIFT_E2E_NAMESPACE)" \
-	$(MAKE) test-e2e
+	$(MAKE) test-e2e GOFLAGS="-mod=readonly $(filter-out -mod=% --mod=%,$(GOFLAGS))"
 
 .PHONY: ci-openshift-e2e-test
 ci-openshift-e2e-test: ci-openshift-e2e-setup test-e2e-openshift
