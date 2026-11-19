@@ -25,6 +25,7 @@ DRACPU_E2E_RESERVED_CPUS ?= "0"
 .PHONY: deploy-openshift
 deploy-openshift: install-helm
 	KUBECONFIG="$(KUBECONFIG)" \
+	OPENSHIFT_NAMESPACE="$(OPENSHIFT_NAMESPACE)" \
 	NODE_GROUP="$(NODE_GROUP)" \
 	PATH="$$PATH:$(CURDIR)/bin" \
 	./scripts/openshift/deploy.sh

@@ -36,7 +36,7 @@ Optional environment variables:
   IMAGE_DIGEST            Driver image digest (takes precedence over IMAGE_TAG).
   CPU_DEVICE_MODE         CPU device mode (default: grouped).
   CPU_GROUP_BY            CPU grouping (default: numanode).
-  NAMESPACE               Namespace for the driver (default: openshift-dra-driver-cpu).
+  OPENSHIFT_NAMESPACE     Namespace for the driver (default: openshift-dra-driver-cpu).
   RELEASE_NAME            Helm release name (default: dra-driver-cpu).
   CHART                   Helm chart path (default: deployment/helm/dra-driver-cpu).
   VALUES_FILE             Helm values file (default: <chart>/values-openshift.yaml).
@@ -66,7 +66,7 @@ REPO_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 # ── Optional variables with defaults ────────────────────────────────────────
 IMAGE_TAG=${IMAGE_TAG:-latest}
 IMAGE_DIGEST=${IMAGE_DIGEST:-}
-NAMESPACE=${NAMESPACE:-openshift-dra-driver-cpu}
+OPENSHIFT_NAMESPACE=${OPENSHIFT_NAMESPACE:-openshift-dra-driver-cpu}
 RELEASE_NAME=${RELEASE_NAME:-dra-driver-cpu}
 TIMEOUT=${TIMEOUT:-2m}
 CPU_DEVICE_MODE=${CPU_DEVICE_MODE:-grouped}
@@ -131,12 +131,12 @@ fi
 : "${RESERVED_CPUS:?Either NODE_GROUP or RESERVED_CPUS is required}"
 
 # ── Step 2: Deploy the DRA CPU driver ───────────────────────────────────────
-if ! oc get namespace "${NAMESPACE}" >/dev/null 2>&1; then
-	echo "Creating namespace ${NAMESPACE}"
-	oc create namespace "${NAMESPACE}"
+if ! oc get namespace "${OPENSHIFT_NAMESPACE}" >/dev/null 2>&1; then
+	echo "Creating namespace ${OPENSHIFT_NAMESPACE}"
+	oc create namespace "${OPENSHIFT_NAMESPACE}"
 fi
 
-oc label namespace "${NAMESPACE}" \
+oc label namespace "${OPENSHIFT_NAMESPACE}" \
 	pod-security.kubernetes.io/enforce=privileged \
 	pod-security.kubernetes.io/audit=privileged \
 	pod-security.kubernetes.io/warn=privileged \
@@ -147,9 +147,9 @@ if [ -n "${IMAGE_DIGEST}" ]; then
 	IMAGE_REFERENCE="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
 fi
 
-echo "Deploying ${RELEASE_NAME} to namespace ${NAMESPACE} (image: ${IMAGE_REFERENCE})"
+echo "Deploying ${RELEASE_NAME} to namespace ${OPENSHIFT_NAMESPACE} (image: ${IMAGE_REFERENCE})"
 helm upgrade --install "${RELEASE_NAME}" "${CHART}" \
-	--namespace "${NAMESPACE}" \
+	--namespace "${OPENSHIFT_NAMESPACE}" \
 	--create-namespace \
 	--values "${VALUES_FILE}" \
 	--skip-schema-validation \
