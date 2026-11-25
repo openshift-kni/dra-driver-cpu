@@ -153,6 +153,7 @@ helm upgrade --install "${RELEASE_NAME}" "${CHART}" \
 	--create-namespace \
 	--values "${VALUES_FILE}" \
 	--skip-schema-validation \
+	--set args.logLevel=4 \
 	--set "image.repository=${IMAGE_REPOSITORY}" \
 	--set "image.tag=${IMAGE_TAG}" \
 	--set-string "image.digest=${IMAGE_DIGEST}" \
