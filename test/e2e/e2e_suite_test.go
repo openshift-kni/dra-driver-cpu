@@ -27,7 +27,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kubernetes-sigs/dra-driver-cpu/api/v1alpha1"
+	"github.com/kubernetes-sigs/dra-driver-cpu/api/allocation/v1alpha1"
+	"github.com/kubernetes-sigs/dra-driver-cpu/internal/runtimecompat"
 	"github.com/kubernetes-sigs/dra-driver-cpu/test/pkg/discovery"
 	"github.com/kubernetes-sigs/dra-driver-cpu/test/pkg/fixture"
 	podmatchers "github.com/kubernetes-sigs/dra-driver-cpu/test/pkg/matchers/pod"
@@ -56,9 +57,6 @@ func TestE2E(t *testing.T) {
 
 const (
 	driverName                = "dra.cpu"
-	argReservedCPUs           = "--reserved-cpus="
-	argCPUDeviceMode          = "--cpu-device-mode="
-	argGroupBy                = "--group-by="
 	argAllocator              = "--allocator="
 	defaultDaemonSetNamespace = "kube-system"
 	daemonSetLabel            = "app=dracpu"
@@ -348,10 +346,11 @@ type driverConfigValues struct {
 	Allocator                             string `json:"allocator,omitempty"`
 	ReservedCPUs                          string `json:"reservedCPUs,omitempty"`
 	PublishNodeAllocatableResourceMapping bool   `json:"publishNodeAllocatableResourceMapping,omitempty"`
+	ForceImmediateSharedCPUReclaim        *bool  `json:"forceImmediateSharedCPUReclaim,omitempty"`
 }
 
 // getDriverConfigValues reads the ConfigMap if the daemonset uses --config=, else falls back to
-// the deprecated CLI flags.
+// CLI flags.
 func getDriverConfigValues(ctx context.Context, client kubernetes.Interface, namespace string, ds *appsv1.DaemonSet) (driverConfigValues, error) {
 	var values driverConfigValues
 	cnt := &ds.Spec.Template.Spec.Containers[0]
@@ -365,17 +364,8 @@ func getDriverConfigValues(ctx context.Context, client kubernetes.Interface, nam
 		}
 		return values, nil
 	}
-	if val, ok := findArgInContainer(cnt, argCPUDeviceMode); ok {
-		values.CPUDeviceMode = val
-	}
-	if val, ok := findArgInContainer(cnt, argGroupBy); ok {
-		values.GroupBy = val
-	}
 	if val, ok := findArgInContainer(cnt, argAllocator); ok {
 		values.Allocator = val
-	}
-	if val, ok := findArgInContainer(cnt, argReservedCPUs); ok {
-		values.ReservedCPUs = val
 	}
 	return values, nil
 }
@@ -512,4 +502,16 @@ func countRequestedCPUs(claims []*resourcev1.ResourceClaim) int64 {
 	}
 	gomega.Expect(total).To(gomega.BeNumerically(">", 0), "CPU claims request no CPUs")
 	return total
+}
+
+// sharedCPUReclaimEnabled mirrors the driver's decision: an explicit setting
+// wins, and when unset the driver checks the runtime NRI reports, which is the
+// one the kubelet reports as "<name>://<version>".
+func sharedCPUReclaimEnabled(configured *bool, node *v1.Node) bool {
+	if configured != nil {
+		return *configured
+	}
+	name, version, _ := strings.Cut(node.Status.NodeInfo.ContainerRuntimeVersion, "://")
+	supported, _ := runtimecompat.SupportsUnsolicitedUpdate(name, version)
+	return supported
 }

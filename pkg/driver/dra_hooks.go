@@ -23,6 +23,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/containerd/nri/pkg/api"
 	"github.com/go-logr/logr"
 	"github.com/kubernetes-sigs/dra-driver-cpu/internal/ctxlog"
 	"github.com/kubernetes-sigs/dra-driver-cpu/pkg/device"
@@ -136,7 +137,11 @@ func (cp *CPUDriver) checkAdminAccess(claim *resourceapi.ResourceClaim) error {
 // runs, so that case is detected later by the NRI CreateContainer check.
 func (cp *CPUDriver) reserveResourceClaimAllocation(logger logr.Logger, claimUID types.UID, cpus cpuset.CPUSet) error {
 	hasSharedContainers := len(cp.podState.GetContainersWithSharedCPUs()) > 0
-	return cp.allocationState.Reserve(logger, claimUID, cpus, hasSharedContainers)
+	// TODO: Handle the per-request CPU assignment split.
+	// See: https://github.com/kubernetes-sigs/dra-driver-cpu/issues/389
+	// For now, use the empty request name (the entire claim), because every
+	// container that references the claim gets all claim CPUs.
+	return cp.allocationState.Reserve(logger, claimUID, map[string]cpuset.CPUSet{"": cpus}, hasSharedContainers)
 }
 
 func (cp *CPUDriver) prepareGroupedResourceClaimLocked(logger logr.Logger, claim *resourceapi.ResourceClaim) kubeletplugin.PrepareResult {
@@ -406,22 +411,55 @@ func (cp *CPUDriver) UnprepareResourceClaims(ctx context.Context, claims []kubel
 }
 
 func (cp *CPUDriver) unprepareResourceClaim(ctx context.Context, logger logr.Logger, claim kubeletplugin.NamespacedObject) error {
+	updates, updater, err := cp.releaseClaim(ctx, logger, claim)
+	if err != nil || len(updates) == 0 {
+		return err
+	}
+	// Running shared containers still have the narrower cpuset. Widen them
+	// before returning: releaseClaim dropped stateMu so the runtime call is not
+	// made under it, and kubeletplugin serializes Unprepare against Prepare, so
+	// no other claim can be reserved in between.
+	logger.V(2).Info("reconciling shared containers after claim release", "numContainers", len(updates))
+	failed, err := updater.UpdateContainers(updates)
+	// A failed update is not retried: the containers keep the narrower cpuset
+	// until their next lifecycle event, as without this option. The claim is
+	// already released, so failing Unprepare here would only make kubelet
+	// retry a release that has already happened.
+	if err != nil {
+		logger.Error(err, "shared container reconcile did not complete", "numFailed", len(failed))
+	}
+	for _, update := range failed {
+		logger.Info("runtime refused a shared container update", "containerID", update.GetContainerId())
+	}
+	return nil
+}
+
+// releaseClaim removes the CDI spec and releases the allocation, returning the
+// shared-container updates the caller should send once stateMu is dropped, and
+// the updater to send them with: Configure can reset cp.reconcile on reconnect,
+// so the caller must not read it after the lock is gone.
+func (cp *CPUDriver) releaseClaim(ctx context.Context, logger logr.Logger, claim kubeletplugin.NamespacedObject) ([]*api.ContainerUpdate, containerUpdater, error) {
 	cp.stateMu.Lock()
 	defer cp.stateMu.Unlock()
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, nil, err
 	}
 	// Remove the CDI spec first. If that fails, keep the allocation recorded so
 	// the driver does not make those CPUs available while stale CDI state remains.
 	if err := cp.cdiMgr.RemoveDevice(logger, getCDIDeviceName(claim.UID)); err != nil {
-		return err
+		return nil, nil, err
 	}
 	cp.allocationState.Release(logger, claim.UID)
 	cp.refreshAllocationMetrics()
-	// TODO(#279): Update existing shared containers here once all supported runtimes can
-	// safely process unsolicited NRI UpdateContainers calls. Until then, each container
-	// picks up the expanded cpuset on its next CreateContainer or Synchronize.
-	return nil
+	if cp.reconcile == nil || cp.reconcile.containerUpdater == nil {
+		return nil, nil, nil
+	}
+	updates, err := sharedContainerUpdatesFor(logger, cp.allocationState, cp.podState, types.UID(""))
+	if err != nil {
+		logger.Error(err, "cannot reconcile shared containers")
+		return nil, nil, nil
+	}
+	return updates, cp.reconcile.containerUpdater, nil
 }
 
 // HandleError is called by the kubelet plugin framework when an error occurs in the background,

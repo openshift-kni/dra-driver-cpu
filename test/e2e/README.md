@@ -19,6 +19,38 @@ While considering extending the testsuite, adding tests, cases or sub-suites, pl
      Flakes should be avoided and actively mitigated. The experience strongly suggests that is better to have a small
      set of representative, high value, highly reliably tests than a larger set of flakier tests.
 
+### adding or enhancing e2e tests
+
+When changing the e2e suite codebase, make sure to use a `Fixture` object the e2e utility packages provide.
+
+```golang
+import (
+    //...
+	"github.com/kubernetes-sigs/dra-driver-cpu/test/pkg/fixture"
+    //...
+)
+
+var _ = ginkgo.Describe("Your suite", ..., func() {
+	var (
+		rootFxt *fixture.Fixture
+	)
+
+	ginkgo.BeforeEach(func(ctx context.Context) {
+        //...
+		rootFxt, err = fixture.ForGinkgo()
+		gomega.Expect(err).ToNot(gomega.HaveOccurred(), "cannot create root fixture: %v", err)
+        //...
+    })
+
+//...
+```
+
+The fixture object will transparently provide:
+
+- a `logr.Logger` you can use for debug information; prefer `ginkgo.By` to document test steps
+- a `kubernetes.Interface` client enhanced to address the testsuite needs (e.g. object labelling)
+  you can use to manipulate kubernetes objects.
+
 ## configure using environment variables
 
 The following environment variable allow to change the behavior of the e2e tests.
@@ -46,7 +78,7 @@ honor these settings, where applicable.
   the cluster against which the tests run.
   If it is not set, the suit will pick a random node among the workers.
 
-- `DRACPU_E2E_RESERVED_CPUS`: (optional) if set, it is meant to mirror the driver `--reserved-cpus`
+- `DRACPU_E2E_RESERVED_CPUS`: (optional) if set, it is meant to mirror the driver `reservedCPUs`
   setting. The value must be a linux cpuset string. The tests will ensure no containers
   consume these CPUs.
   NOTE: the Makefile defaults to "0" if not set, because a nonempty value is needed internally.
@@ -55,7 +87,7 @@ honor these settings, where applicable.
 
 - `DRACPU_E2E_CPU_DEVICE_MODE`: (optional): If set, change the behavior of the tests to assume
   the driver is configured with the corresponding device mode. Is meant to mirror the driver
-  `--cpu-device-mode` setting.
+  `cpuDeviceMode` setting.
   NOTE: the Makefile defaults to "grouped" if not set, because a nonempty value is needed internally.
   NOTE: Likewise the e2e tests, the Makefile also behaves differently depending on this setting.
   It is recommended to set it before to run targets like `make ci-manifests`.
@@ -72,6 +104,15 @@ honor these settings, where applicable.
   gate; the stock kind configs enable it (they require a 1.37+ node image, which is the
   Makefile default).
 
+- `DRACPU_E2E_FORCE_IMMEDIATE_SHARED_CPU_RECLAIM`: (optional, default `false`): when `true`, *the
+  Makefile* `ci-kind-setup` target deploys the driver with the
+  `driverConfig.forceImmediateSharedCPUReclaim: true` option. The tests read the option back from
+  the driver ConfigMap and expect running shared pods to be widened when a claim is released
+  instead of keeping their last cpuset. When the option is unset, the tests apply the
+  driver's runtime allowlist to the node's reported container runtime. Only set `true` with a runtime that includes
+  [containerd/nri#301](https://github.com/containerd/nri/pull/301); the stock
+  `kindest/node:v1.37.0` image ships containerd v2.3.4, which does not.
+
 - `DRACPU_E2E_DUMP_RAW_LOGS`: (optional): if set to any value which is true-ish (e.g. `1`, `true`...)
   makes the tests which verify the contextual logging integrity dump the full raw captured logs
   before to run any actual test. Useful for troubleshooting and test fixing/tuning.
@@ -80,6 +121,17 @@ honor these settings, where applicable.
 - `DRACPU_E2E_DAEMONSET_NAMESPACE`: (optional, default `kube-system`): the namespace where the
   dra-driver-cpu DaemonSet and its pods are deployed. Override this when the driver is installed
   in a namespace other than `kube-system`.
+
+- `DRACPU_E2E_FIXTURE_NAMESPACE`: (optional): if set, the test fixtures use this value as the
+  namespace name instead of generating random names. If the namespace already exists it is
+  reused and teardown will not delete the namespace itself, but will still clean up all
+  resources inside it (pods, resource claims, resource claim templates) so that specs do
+  not pollute each other; if it does not exist, the fixture creates it and teardown deletes
+  it normally. This is useful in more complex CI systems where the test namespace must be
+  known in advance or created externally before the tests run.
+  Suite-created pods, resource claims, and resource claim templates are labeled
+  `app.kubernetes.io/managed-by=dra-driver-cpu-e2e` so they can be identified as resources
+  created during the test.
 
 ## how to run
 
