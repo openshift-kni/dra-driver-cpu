@@ -32,12 +32,12 @@ see [`openshift/kubernetes rebase`](https://github.com/everettraven/openshift-ku
 
 ## Rebase and review
 
-Create a working branch from the downstream branch and replay it onto the latest
+Create a working branch from the downstream branch and merge it with the latest
 matching upstream branch:
 
 ```bash
 git switch -c rebase-main origin/main
-git rebase upstream/main
+git merge upstream/main
 ```
 
 Resolve conflicts in each carried commit, keeping the downstream behavior that
