@@ -18,17 +18,13 @@ package driverconfig
 
 import (
 	"fmt"
+	"strconv"
 
 	"sigs.k8s.io/yaml"
 )
 
 // ConfigAPIVersion is the version validated in config files.
 const ConfigAPIVersion = "v1alpha1"
-
-const (
-	AllocatorExternal   = "external"
-	AllocatorCPUManager = "cpumanager"
-)
 
 // Config holds the driver runtime configuration.
 type Config struct {
@@ -50,6 +46,11 @@ type Config struct {
 	// feature gate in the cluster. Defaults to false.
 	PublishNodeAllocatableResourceMapping bool   `json:"publishNodeAllocatableResourceMapping,omitempty"`
 	Allocator                             string `json:"allocator,omitempty"`
+	// ForceImmediateSharedCPUReclaim pushes released CPUs to running shared containers
+	// right after Unprepare, with an unsolicited NRI UpdateContainers call.
+	// Unset (default): enabled on runtimes known to include containerd/nri#301
+	// (containerd 2.4.0+, cri-o 1.37.0+); true: force on; false: force off.
+	ForceImmediateSharedCPUReclaim *bool `json:"forceImmediateSharedCPUReclaim,omitempty"`
 }
 
 // LogValues returns key-value pairs for structured logging of the config.
@@ -66,6 +67,7 @@ func (c Config) LogValues() []any {
 		"kubeletRootDir", c.KubeletRootDir,
 		"publishNodeAllocatableResourceMapping", c.PublishNodeAllocatableResourceMapping,
 		"allocator", c.Allocator,
+		"forceImmediateSharedCPUReclaim", autoOrBool(c.ForceImmediateSharedCPUReclaim),
 	}
 }
 
@@ -83,15 +85,38 @@ type dumpConfig struct {
 	KubeletRootDir                        string `json:"kubeletRootDir"`
 	PublishNodeAllocatableResourceMapping bool   `json:"publishNodeAllocatableResourceMapping"`
 	Allocator                             string `json:"allocator"`
+	ForceImmediateSharedCPUReclaim        string `json:"forceImmediateSharedCPUReclaim"`
 }
 
 // Dump renders the Config as YAML, for logging a human-readable snapshot of
 // the fully loaded configuration. Zero values are included, unlike
 // marshalling Config directly, since they reflect real runtime state.
 func (c Config) Dump() string {
-	out, err := yaml.Marshal(dumpConfig(c))
+	dc := dumpConfig{
+		Kubeconfig:                            c.Kubeconfig,
+		HostnameOverride:                      c.HostnameOverride,
+		BindAddress:                           c.BindAddress,
+		ReservedCPUs:                          c.ReservedCPUs,
+		CPUDeviceMode:                         c.CPUDeviceMode,
+		GroupBy:                               c.GroupBy,
+		ExposePCIeRoots:                       c.ExposePCIeRoots,
+		SysFSOverlay:                          c.SysFSOverlay,
+		KubeletRootDir:                        c.KubeletRootDir,
+		PublishNodeAllocatableResourceMapping: c.PublishNodeAllocatableResourceMapping,
+		Allocator:                             c.Allocator,
+		ForceImmediateSharedCPUReclaim:        autoOrBool(c.ForceImmediateSharedCPUReclaim),
+	}
+	out, err := yaml.Marshal(dc)
 	if err != nil {
 		return fmt.Sprintf("<!!! FAILED TO MARSHAL Config: %v !!!>", err)
 	}
 	return string(out)
+}
+
+// autoOrBool renders an unset tri-state option as "auto".
+func autoOrBool(b *bool) string {
+	if b == nil {
+		return "auto"
+	}
+	return strconv.FormatBool(*b)
 }

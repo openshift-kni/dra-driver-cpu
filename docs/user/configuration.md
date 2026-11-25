@@ -1,14 +1,18 @@
 # Configuration
 
 This page covers configuring the driver itself, the kubelet prerequisites required to run it,
-and the command-line flags currently being deprecated in favour of the configuration file.
+and the command-line flags the driver still supports.
 
 ## Driver configuration
 
 The driver supports two configuration mechanisms:
 
 - The config file - the main, preferred way to configure the driver.
-- Command-line flags — kept for a small set of important, mostly behavior altering settings and for backward compatibility. Some flags are being deprecated in favor of their config file equivalent (see [Helm: deprecated args values vs driverConfig](#helm-deprecated-args-values-vs-driverconfig) below).
+- Command-line flags — kept for a small set of important, mostly behavior altering settings and for
+  backward compatibility. Flags removed in v0.4.0 and their config file equivalents are listed
+  in [Command-line flags](#command-line-flags) below.
+  Some flags are being deprecated in favor of their config file equivalent
+  (see [Helm: deprecated args values vs driverConfig](#helm-deprecated-args-values-vs-driverconfig) below).
 
 If the same setting is provided both ways, the explicit command-line flag wins, so avoid mixing
 the two for the same field.
@@ -50,6 +54,28 @@ CPUs `0-1`:
 helm install dra-driver-cpu oci://registry.k8s.io/dra-driver-cpu/charts/dra-driver-cpu \
     --set driverConfig.reservedCPUs="0-1"
 ```
+
+#### Pinning the driver image by digest
+
+Set `image.repository` and `image.digest` to deploy a specific image digest. When `image.digest`
+is set, it takes precedence over `image.tag`:
+
+```yaml
+image:
+  repository: quay.io/org/dra-driver-cpu
+  digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+```
+
+For example, from the repository root, pass the digest directly with Helm:
+
+```shell
+helm upgrade --install dra-driver-cpu deployment/helm/dra-driver-cpu \
+    --set image.repository=quay.io/org/dra-driver-cpu \
+    --set-string image.digest=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+```
+
+The chart renders the image as `repository@digest`. Leave `image.digest` empty to use the tag,
+which defaults to the chart's application version.
 
 #### driverConfig sub-fields
 
@@ -104,13 +130,21 @@ on - is configured through other Helm values, not through this file.
   of the kubelet's `kubeReserved` and `systemReserved` settings, so that the kubelet
   subtracts the right number of CPUs from `Node.Status.Allocatable`.
 
-`hostnameOverride` (string)
+`hostnameOverride` (string, deprecated)
 
-- Override the node hostname the driver registers under.
+- The Helm chart refuses it.
 
 `kubeconfig` (string)
 
 - Path to a kubeconfig file (for out-of-cluster use).
+
+`sysfsOverlay` (string)
+
+- Path, inside the driver container, to a YAML file that overlays the sysfs topology the
+  driver discovers. Use it for incomplete or synthetic topology, e.g. Docker Desktop for
+  macOS. The file must be mounted into the Pod; see the
+  [sysfs overlay example](../../hack/examples/sysfs-overlay/README.md) for the file format
+  and mounts.
 
 `publishNodeAllocatableResourceMapping` (bool, default: `false`)
 
@@ -118,6 +152,31 @@ on - is configured through other Helm values, not through this file.
   and kubelet account claimed CPUs as node allocatable `cpu`.
 - Requires the `DRANodeAllocatableResources` feature gate (alpha, 1.37+). See
   [Workload Configuration Requirements](workload-requirements.md).
+
+`forceImmediateSharedCPUReclaim` (bool, default: unset)
+
+When a Pod is deleted and its exclusive CPU claim is released, those CPUs go back to the
+shared pool. With this option disabled, already-running shared containers keep using their
+narrower cpuset until the next container creation. With this option enabled, the driver
+moves them onto the released CPUs right away.
+
+This needs a runtime whose NRI adaptation includes
+[containerd/nri#301](https://github.com/containerd/nri/pull/301); older adaptations are
+prone to deadlock on the update this option sends. The NRI handshake reports the runtime
+name and version but not the NRI version it vendors, so the driver decides from a list of
+known-safe runtime versions:
+
+- **Unset (default)**: enabled on containerd 2.4.0+ and CRI-O 1.37.0+, disabled on older or
+  unknown runtimes (k3s, microk8s, vendor forks). The driver decides again each time it
+  reconnects to the runtime, and logs the decision.
+- **`true`**: enabled regardless of runtime version. Only use this if you know your runtime
+  includes containerd/nri#301.
+- **`false`**: disabled, even on known-safe runtimes.
+
+If the update fails, it is logged and the claim is still reported as released: the
+containers keep their current cpuset until their next lifecycle event, exactly as without
+this option. Unprepare does not fail on it, because by then the CPUs are already back in
+the pool and a retry would only re-release a claim that is already gone.
 
 #### Example
 
@@ -132,6 +191,9 @@ driverConfig:
 
 #### Versioning and backward compatibility
 
+See the [backward compatibility policy](upgrade.md#backward-compatibility-policy)
+for the project-wide promise.
+
 The schema is versioned via the optional `apiVersion` field (currently `v1alpha1`). The layout
 is intentionally flat for now. If a nested hierarchy is introduced in the future, the
 `apiVersion` field will be bumped so that older config files continue to be accepted or produce
@@ -143,9 +205,9 @@ an error.
 covering all driver settings — there is no separate Helm value per field). `args.*` on the other
 hand exposes individual fields as explicit Helm values.
 
-- `args.cpuDeviceMode`, `args.groupBy`, `args.reservedCPUs`, and `args.hostnameOverride` are
-  deprecated: instead of being emitted as CLI flags, they are now folded into the generated
-  `driverConfig` ConfigMap.
+- `args.cpuDeviceMode`, `args.groupBy`, and `args.reservedCPUs` are deprecated: instead of
+  being emitted as CLI flags, they are now folded into the generated `driverConfig` ConfigMap.
+- `args.hostnameOverride` and `driverConfig.hostnameOverride` are refused.
 - Both reach the same driver settings; `args.*` takes priority when both are set for the same
   field.
 - The intent is to eventually deprecate `args.*` entirely in favour of `driverConfig` as the
@@ -172,18 +234,18 @@ never chart values, so they are rejected rather than ignored.
 **NOTE:** Command-line flags are kept mainly for backward compatibility. Prefer the
 [configuration file](#configuration-file) above for new deployments.
 
-`--cpu-device-mode`, `--group-by`, `--reserved-cpus`, `--hostname-override`, `--sysfs-overlay`
-are deprecated in favour of their config file equivalents and will be removed in a future
-release ([issue #245](https://github.com/kubernetes-sigs/dra-driver-cpu/issues/245)). Each is
-marked as deprecated in `--help`, and passing one explicitly logs a startup warning.
+`--cpu-device-mode`, `--group-by`, `--reserved-cpus`, `--hostname-override` and
+`--sysfs-overlay` were removed in v0.4.0
+([issue #281](https://github.com/kubernetes-sigs/dra-driver-cpu/issues/281)); the driver
+now rejects them as unknown flags. Set the config file equivalents instead:
 
 - `--cpu-device-mode` → `cpuDeviceMode`
 - `--group-by` → `groupBy`
 - `--reserved-cpus` → `reservedCPUs`
-- `--hostname-override` → `hostnameOverride`
+- `--hostname-override` → `NODE_NAME` (set by the Helm chart)
 - `--sysfs-overlay` → `sysfsOverlay`
 
-The remaining flags aren't part of that deprecation:
+The remaining flags are still supported:
 
 - `--config`: path to the config file described above.
 - `--kubeconfig`: path to a kubeconfig file, for out-of-cluster use. Also settable via the `kubeconfig` config field.
