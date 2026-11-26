@@ -20,12 +20,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"iter"
 	"math"
-	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,7 +47,7 @@ import (
 
 const (
 	driverDaemonSetName = "dracpu"
-	metricsPath         = "/metrics"
+	metricsPath         = "metrics"
 
 	allocatedCPUsMetric        = "dra_cpu_allocated_cpus"
 	availableCPUsMetric        = "dra_cpu_available_cpus"
@@ -347,41 +346,18 @@ func discoverAvailableCPUs(ctx context.Context, fxt *fixture.Fixture, nodeName, 
 func getDriverRawMetrics(ctx context.Context, fxt *fixture.Fixture, nodeName string) (string, error) {
 	dracpuPod, err := e2epod.GetDRACPUPod(ctx, fxt.K8SClientset, nodeName, daemonSetNamespace)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("find driver pod on node %q: %w", nodeName, err)
 	}
 
-	podIP, err := waitForPodIP(ctx, fxt.K8SClientset, dracpuPod.Name)
+	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	rawMetrics, err := fxt.K8SClientset.CoreV1().Pods(dracpuPod.Namespace).
+		ProxyGet("http", dracpuPod.Name, strconv.Itoa(driverHTTPPort), metricsPath, nil).
+		DoRaw(requestCtx)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("get metrics via pod proxy for %s/%s: %w", dracpuPod.Namespace, dracpuPod.Name, err)
 	}
-
-	rawMetrics, err := getMetricsFromPodIP(podIP)
-	if err != nil {
-		return "", fmt.Errorf("cannot get metrics from the dracpu pod: %w", err)
-	}
-	return rawMetrics, nil
-}
-
-func metricsURL(podIP string) string {
-	return fmt.Sprintf("http://%s:%d%s", podIP, driverHTTPPort, metricsPath)
-}
-
-func getMetricsFromPodIP(podIP string) (string, error) {
-	httpClient := &http.Client{Timeout: 10 * time.Second}
-	resp, err := httpClient.Get(metricsURL(podIP)) //nolint:noctx // httpClient.Timeout covers this
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GET %s returned %d: %s", metricsURL(podIP), resp.StatusCode, string(bodyBytes))
-	}
-	return string(bodyBytes), nil
+	return string(rawMetrics), nil
 }
 
 func parseAllocationMetricSnapshot(rawMetrics string) (allocationMetricSnapshot, error) {

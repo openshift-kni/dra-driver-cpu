@@ -19,48 +19,21 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/kubernetes-sigs/dra-driver-cpu/test/pkg/fixture"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/client-go/kubernetes"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 )
 
 const (
-	healthzPath    = "/healthz"
+	healthzPath    = "healthz"
 	driverHTTPPort = 8080
 )
-
-func waitForPodIP(ctx context.Context, client kubernetes.Interface, podName string) (string, error) {
-	var podIP string
-	err := wait.PollUntilContextTimeout(ctx, driverPodPollInterval, driverPodPollTimeout, true,
-		func(ctx context.Context) (bool, error) {
-			pod, err := client.CoreV1().Pods(daemonSetNamespace).Get(ctx, podName, metav1.GetOptions{})
-			if err != nil {
-				return false, err
-			}
-			if pod.Status.PodIP == "" {
-				return false, nil
-			}
-			podIP = pod.Status.PodIP
-			return true, nil
-		})
-	if err != nil {
-		return "", fmt.Errorf("waiting for PodIP on %q: %w", podName, err)
-	}
-	return podIP, nil
-}
-
-// healthzURL returns the full URL the test will GET, using the pod's IP
-// directly rather than going through a Service, so each pod is probed individually.
-func healthzURL(podIP string) string {
-	return fmt.Sprintf("http://%s:%d%s", podIP, driverHTTPPort, healthzPath)
-}
 
 var _ = ginkgo.Describe("dra-driver-cpu HTTP health endpoints", ginkgo.Ordered, func() {
 	var fxt *fixture.Fixture
@@ -73,43 +46,35 @@ var _ = ginkgo.Describe("dra-driver-cpu HTTP health endpoints", ginkgo.Ordered, 
 
 	ginkgo.Context("when the driver DaemonSet is deployed and running", func() {
 
-		// Test 1: verify the HTTP handler itself.
-		// We hit /healthz directly on each pod IP and assert HTTP 200. The call
-		// is wrapped in Eventually to tolerate the initialDelaySeconds window
-		// (10 s liveness / 5 s readiness) during which Kubernetes hasn't started
-		// probing yet either — so the server may still be initialising.
 		ginkgo.It("should return HTTP 200 from /healthz on each driver pod", func(ctx context.Context) {
 			pods := waitForRunningDriverPods(ctx, fxt.K8SClientset)
 
-			httpClient := &http.Client{Timeout: 10 * time.Second}
-
 			for _, pod := range pods {
-				podIP, err := waitForPodIP(ctx, fxt.K8SClientset, pod.Name)
-				gomega.Expect(err).NotTo(gomega.HaveOccurred(),
-					"obtaining PodIP for pod %q", pod.Name)
+				ginkgo.By(fmt.Sprintf("GET /healthz via proxy for pod %s/%s on node %s", pod.Namespace, pod.Name, pod.Spec.NodeName))
 
-				url := healthzURL(podIP)
-				ginkgo.By(fmt.Sprintf("GET %s (pod %s, node %s)", url, pod.Name, pod.Spec.NodeName))
+				// The call is wrapped in Eventually to tolerate the initialDelaySeconds window
+				// (10 s liveness / 5 s readiness) during which Kubernetes hasn't started
+				// probing yet either — so the server may still be initialising.
+				gomega.Eventually(func(ctx context.Context) error {
+					requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+					defer cancel()
 
-				var lastStatus int
-				var lastBody string
-				gomega.Eventually(func(g gomega.Gomega) {
-					resp, err := httpClient.Get(url) //nolint:noctx // httpClient.Timeout covers this
-					g.Expect(err).NotTo(gomega.HaveOccurred(),
-						"GET %s failed for pod %q on node %q", url, pod.Name, pod.Spec.NodeName)
-					defer resp.Body.Close()
-
-					bodyBytes, readErr := io.ReadAll(resp.Body)
-					g.Expect(readErr).NotTo(gomega.HaveOccurred(), "reading response body")
-					lastStatus = resp.StatusCode
-					lastBody = string(bodyBytes)
-
-					g.Expect(resp.StatusCode).To(gomega.Equal(http.StatusOK),
-						"expected HTTP 200 from %s (pod %q, node %q), got %d; body: %s",
-						url, pod.Name, pod.Spec.NodeName, resp.StatusCode, lastBody)
-				}, driverPodPollTimeout, driverPodPollInterval).Should(gomega.Succeed(),
-					"/healthz on %s did not return 200 within timeout (last status=%d, body=%q)",
-					url, lastStatus, lastBody)
+					var status int
+					body, err := fxt.K8SClientset.CoreV1().RESTClient().Get().
+						Namespace(pod.Namespace).
+						Resource("pods").
+						Name(utilnet.JoinSchemeNamePort("http", pod.Name, strconv.Itoa(driverHTTPPort))).
+						SubResource("proxy").
+						Suffix(healthzPath).
+						Do(requestCtx).StatusCode(&status).Raw()
+					if err != nil {
+						return fmt.Errorf("get /healthz via pod proxy for %s/%s: %w", pod.Namespace, pod.Name, err)
+					}
+					if status != http.StatusOK {
+						return fmt.Errorf("expected HTTP 200 from /healthz for pod %s/%s, got %d: %s", pod.Namespace, pod.Name, status, body)
+					}
+					return nil
+				}).WithContext(ctx).WithTimeout(driverPodPollTimeout).WithPolling(driverPodPollInterval).Should(gomega.Succeed())
 			}
 		})
 
